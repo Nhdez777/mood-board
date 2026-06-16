@@ -1,0 +1,301 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>moodboard</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: system-ui, sans-serif; background: #fafafa; overflow: hidden; height: 100vh; }
+
+    #toolbar {
+      position: fixed; top: 0; left: 0; right: 0; z-index: 100;
+      background: white; border-bottom: 1px solid #e5e7eb;
+      display: flex; align-items: center; gap: 12px; padding: 0 16px; height: 48px;
+    }
+    #toolbar h1 { font-size: 14px; font-weight: 600; color: #111; }
+    .sep { width: 1px; height: 24px; background: #e5e7eb; }
+    .tb-btn {
+      font-size: 12px; padding: 5px 12px; border-radius: 6px;
+      border: 1px solid #e5e7eb; background: white; cursor: pointer; color: #374151;
+    }
+    .tb-btn:hover { background: #f9fafb; }
+    #url-input {
+      font-size: 12px; padding: 5px 10px; border-radius: 6px;
+      border: 1px solid #e5e7eb; outline: none; width: 220px; color: #111;
+    }
+    #url-input:focus { border-color: #6366f1; }
+    #color-picker { width: 28px; height: 28px; border-radius: 6px; border: 1px solid #e5e7eb; cursor: pointer; padding: 2px; }
+    .count { font-size: 11px; color: #9ca3af; margin-left: auto; }
+
+    #canvas {
+      position: fixed; top: 48px; left: 0; right: 0; bottom: 0;
+      overflow: hidden; cursor: default;
+    }
+
+    .item {
+      position: absolute; cursor: move; user-select: none;
+      border-radius: 6px; overflow: hidden;
+      box-shadow: 0 1px 3px rgba(0,0,0,.12);
+      transition: box-shadow 0.15s;
+    }
+    .item:hover { box-shadow: 0 4px 12px rgba(0,0,0,.18); }
+    .item.selected { outline: 2px solid #6366f1; outline-offset: 1px; }
+
+    .item img { display: block; width: 100%; height: 100%; object-fit: cover; pointer-events: none; }
+
+    .note {
+      padding: 12px; font-size: 13px; line-height: 1.5;
+      min-width: 120px; min-height: 80px; word-break: break-word;
+    }
+    .note[contenteditable]:focus { outline: none; }
+
+    .resize-handle {
+      position: absolute; bottom: 0; right: 0;
+      width: 14px; height: 14px; cursor: se-resize;
+      opacity: 0; transition: opacity 0.15s;
+    }
+    .item:hover .resize-handle, .item.selected .resize-handle { opacity: 1; }
+    .resize-handle::after {
+      content: ''; position: absolute; bottom: 3px; right: 3px;
+      border-right: 2px solid rgba(0,0,0,.3); border-bottom: 2px solid rgba(0,0,0,.3);
+      width: 6px; height: 6px;
+    }
+
+    .delete-btn {
+      position: absolute; top: -8px; right: -8px;
+      width: 20px; height: 20px; border-radius: 50%;
+      background: #ef4444; color: white; font-size: 11px;
+      border: none; cursor: pointer; display: none;
+      align-items: center; justify-content: center; line-height: 1;
+    }
+    .item.selected .delete-btn { display: flex; }
+
+    #drop-overlay {
+      position: fixed; inset: 0; background: rgba(99,102,241,.08);
+      border: 3px dashed #6366f1; display: none; z-index: 50;
+      align-items: center; justify-content: center;
+      font-size: 18px; color: #6366f1; pointer-events: none;
+    }
+    #drop-overlay.active { display: flex; }
+  </style>
+</head>
+<body>
+
+<div id="toolbar">
+  <h1>moodboard</h1>
+  <div class="sep"></div>
+  <button class="tb-btn" id="btn-upload">+ image</button>
+  <input id="file-input" type="file" accept="image/*" multiple style="display:none" />
+  <input id="url-input" type="text" placeholder="paste image URL..." />
+  <button class="tb-btn" id="btn-url">add</button>
+  <div class="sep"></div>
+  <button class="tb-btn" id="btn-note">sticky note</button>
+  <input id="color-picker" type="color" value="#fef08a" title="note color" />
+  <div class="sep"></div>
+  <button class="tb-btn" id="btn-clear">clear all</button>
+  <button class="tb-btn" id="btn-export">export PNG</button>
+  <span class="count" id="item-count">0 items</span>
+</div>
+
+<div id="canvas"></div>
+<div id="drop-overlay">drop images here</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
+<script>
+const canvas = document.getElementById('canvas');
+let items = [];
+let selected = null;
+let zCounter = 1;
+
+function updateCount() {
+  document.getElementById('item-count').textContent = `${items.length} item${items.length !== 1 ? 's' : ''}`;
+}
+
+function makeDraggable(el) {
+  let startX, startY, origX, origY;
+
+  el.addEventListener('mousedown', (e) => {
+    if (e.target.classList.contains('resize-handle') || e.target.classList.contains('delete-btn')) return;
+    if (e.target.getAttribute('contenteditable') === 'true') return;
+    e.preventDefault();
+    selectItem(el);
+    startX = e.clientX; startY = e.clientY;
+    origX = parseInt(el.style.left); origY = parseInt(el.style.top);
+
+    const onMove = (e) => {
+      el.style.left = origX + e.clientX - startX + 'px';
+      el.style.top = origY + e.clientY - startY + 'px';
+    };
+    const onUp = () => {
+      window.removeEventListener('mousemove', onMove);
+      window.removeEventListener('mouseup', onUp);
+    };
+    window.addEventListener('mousemove', onMove);
+    window.addEventListener('mouseup', onUp);
+  });
+}
+
+function makeResizable(el) {
+  const handle = el.querySelector('.resize-handle');
+  if (!handle) return;
+  let startX, startY, origW, origH;
+  handle.addEventListener('mousedown', (e) => {
+    e.stopPropagation(); e.preventDefault();
+    startX = e.clientX; startY = e.clientY;
+    origW = el.offsetWidth; origH = el.offsetHeight;
+    const onMove = (e) => {
+      el.style.width = Math.max(80, origW + e.clientX - startX) + 'px';
+      el.style.height = Math.max(60, origH + e.clientY - startY) + 'px';
+    };
+    const onUp = () => {
+      window.removeEventListener('mousemove', onMove);
+      window.removeEventListener('mouseup', onUp);
+    };
+    window.addEventListener('mousemove', onMove);
+    window.addEventListener('mouseup', onUp);
+  });
+}
+
+function selectItem(el) {
+  if (selected) selected.classList.remove('selected');
+  selected = el;
+  if (el) {
+    el.classList.add('selected');
+    el.style.zIndex = ++zCounter;
+  }
+}
+
+function addItem(el) {
+  el.style.zIndex = ++zCounter;
+  makeDraggable(el);
+  makeResizable(el);
+  canvas.appendChild(el);
+  items.push(el);
+  selectItem(el);
+  updateCount();
+}
+
+function createDeleteBtn(el) {
+  const btn = document.createElement('button');
+  btn.className = 'delete-btn';
+  btn.textContent = '×';
+  btn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    canvas.removeChild(el);
+    items = items.filter(i => i !== el);
+    if (selected === el) selected = null;
+    updateCount();
+  });
+  return btn;
+}
+
+function addImage(src, x, y) {
+  const el = document.createElement('div');
+  el.className = 'item';
+  el.style.cssText = `left:${x}px; top:${y}px; width:200px; height:150px;`;
+  const img = document.createElement('img');
+  img.src = src; img.draggable = false;
+  const handle = document.createElement('div');
+  handle.className = 'resize-handle';
+  el.appendChild(img);
+  el.appendChild(handle);
+  el.appendChild(createDeleteBtn(el));
+  addItem(el);
+}
+
+function randomPos() {
+  return {
+    x: 60 + Math.random() * (window.innerWidth - 320),
+    y: 60 + Math.random() * (window.innerHeight - 250),
+  };
+}
+
+document.getElementById('btn-upload').addEventListener('click', () => {
+  document.getElementById('file-input').click();
+});
+
+document.getElementById('file-input').addEventListener('change', (e) => {
+  for (const file of e.target.files) {
+    const reader = new FileReader();
+    reader.onload = (ev) => {
+      const { x, y } = randomPos();
+      addImage(ev.target.result, x, y);
+    };
+    reader.readAsDataURL(file);
+  }
+  e.target.value = '';
+});
+
+document.getElementById('btn-url').addEventListener('click', () => {
+  const url = document.getElementById('url-input').value.trim();
+  if (!url) return;
+  const { x, y } = randomPos();
+  addImage(url, x, y);
+  document.getElementById('url-input').value = '';
+});
+
+document.getElementById('url-input').addEventListener('keydown', (e) => {
+  if (e.key === 'Enter') document.getElementById('btn-url').click();
+});
+
+document.getElementById('btn-note').addEventListener('click', () => {
+  const color = document.getElementById('color-picker').value;
+  const { x, y } = randomPos();
+  const el = document.createElement('div');
+  el.className = 'item note';
+  el.style.cssText = `left:${x}px; top:${y}px; width:160px; min-height:100px; background:${color};`;
+  el.setAttribute('contenteditable', 'true');
+  el.textContent = 'click to edit...';
+  el.addEventListener('focus', () => { if (el.textContent === 'click to edit...') el.textContent = ''; });
+  const handle = document.createElement('div');
+  handle.className = 'resize-handle';
+  el.appendChild(handle);
+  el.appendChild(createDeleteBtn(el));
+  addItem(el);
+  setTimeout(() => el.focus(), 50);
+});
+
+document.getElementById('btn-clear').addEventListener('click', () => {
+  if (!items.length || !confirm('Clear everything?')) return;
+  items.forEach(el => canvas.removeChild(el));
+  items = []; selected = null; updateCount();
+});
+
+document.getElementById('btn-export').addEventListener('click', async () => {
+  selectItem(null);
+  await new Promise(r => setTimeout(r, 100));
+  html2canvas(canvas, { backgroundColor: '#fafafa', useCORS: true, scale: 2 }).then(c => {
+    const a = document.createElement('a');
+    a.download = `moodboard-${Date.now()}.png`;
+    a.href = c.toDataURL('image/png');
+    a.click();
+  });
+});
+
+canvas.addEventListener('click', (e) => {
+  if (e.target === canvas) selectItem(null);
+});
+
+const overlay = document.getElementById('drop-overlay');
+document.addEventListener('dragover', (e) => { e.preventDefault(); overlay.classList.add('active'); });
+document.addEventListener('dragleave', (e) => { if (!e.relatedTarget) overlay.classList.remove('active'); });
+document.addEventListener('drop', (e) => {
+  e.preventDefault(); overlay.classList.remove('active');
+  for (const file of e.dataTransfer.files) {
+    if (!file.type.startsWith('image/')) continue;
+    const reader = new FileReader();
+    reader.onload = (ev) => addImage(ev.target.result, e.clientX - 100, e.clientY - 75);
+    reader.readAsDataURL(file);
+  }
+});
+
+document.addEventListener('keydown', (e) => {
+  if ((e.key === 'Delete' || e.key === 'Backspace') && selected && document.activeElement === document.body) {
+    const btn = selected.querySelector('.delete-btn');
+    if (btn) btn.click();
+  }
+});
+</script>
+</body>
+</html>
